@@ -2,63 +2,35 @@ import json
 import csv
 import unicodecsv
 import time
+import datetime
 import sys
 
-from django.template.loader import get_template
-from django.template import Context, RequestContext
+from django.template import RequestContext
 from django.shortcuts import render_to_response
-from django import forms
 from django.forms.formsets import formset_factory
-from django.forms.models import modelformset_factory
-from django.contrib.auth.forms import UserCreationForm
 from django.http import HttpResponse, HttpResponseRedirect
-from django.views.generic import ListView
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate, login, logout
+
+from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from models import *
 from forms import *
 from qems2.qsub.model_utils import *
 from utils import *
-#from packet_parser import handle_uploaded_packet, parse_uploaded_packet, parse_packet_data
 from packet_parser import parse_packet_data
 from django.utils.safestring import mark_safe
 from haystack.query import SearchQuerySet
-from cStringIO import StringIO
 from django_comments.models import Comment
 from django.db.models import Q
 from django.core.cache import cache
-from django.views.decorators.cache import cache_page
 
-from collections import OrderedDict
-from itertools import chain, ifilter
+from django.contrib.contenttypes.models import ContentType
 
-
-def register (request):
-    if request.method == 'POST':
-        form = WriterCreationForm(request.POST)
-        if form.is_valid():
-            user = form.save()
-            auth_user = authenticate(username=form.cleaned_data['username'],
-                                     password=form.cleaned_data['password1'])
-            if auth_user.is_active:
-                login(request, auth_user)
-                return HttpResponseRedirect("/main/")
-            else:
-                render_to_response('failure.html', {'message': 'Account disabled! Contact administrator!'})
-    else:
-        form = WriterCreationForm()
-    return render_to_response('registration/register.html',
-                              {'form': form,},
-                              context_instance=RequestContext(request))
 
 @login_required
 def main (request):
     return question_sets(request)
 
-    #return render_to_response('main.html', {'user': request.user.writer},
-    #                          context_instance=RequestContext(request))
 @login_required
 def sidebar (request):
     writer = request.user.writer
@@ -69,11 +41,10 @@ def sidebar (request):
     # the tournaments for which this user is an editor
     editor_sets = writer.question_set_editor.all()
 
-    # all_sets = list(set(writer_sets + editors_sets + owned_sets))
     all_sets = editor_sets
     print 'All sets object:'
     print all_sets
-    	
+        
     return render_to_response('sidebar.html', {'question_sets': all_sets, 'user': writer},
            context_instance=RequestContext(request))
 
@@ -85,19 +56,33 @@ def question_sets (request):
     owned_sets = QuestionSet.objects.filter(owner=writer)
     # the tournaments for which this user is an editor
     editor_sets = writer.question_set_editor.all()
-    # the tournaments for which this user is a writer
-    # by definition this includes sets you're editing and owning
-    # Python is having trouble unioning these sets by default,
-    # so be more explicit about what to union by using IDs as a key in a dict
-    writer_sets_dict = {}
-    for qset in (owned_sets | editor_sets | writer.question_set_writer.all()):
-        writer_sets_dict[qset.id] = qset
+    
+    all_sets = owned_sets | editor_sets | writer.question_set_writer.all()
+    all_sets = all_sets.order_by('date')
+    
+    # Sets that are in the future
+    upcoming_sets = {}
+    
+    # Sets that are in the past
+    completed_sets = {}
+        
+    for qset in (all_sets):
+        if (qset.date >= datetime.now().date()):
+            upcoming_sets[qset.id] = qset
+        else:
+            completed_sets[qset.id] = qset
+            
+    upcoming_sets = upcoming_sets
+    completed_sets = completed_sets
+            
+    upcoming_sets = upcoming_sets.values()
+    completed_sets = completed_sets.values()
+    
+    upcoming_sets = sorted(upcoming_sets, key=lambda qset: qset.date)
+    completed_sets = sorted(completed_sets, key=lambda qset: qset.date)
 
-    writer_sets = writer_sets_dict.values()
-
-    all_sets  = [{'header': 'All your question sets', 'qsets': writer_sets, 'id': 'qsets-write'},
-                 {'header': 'Question sets you are editing', 'qsets': editor_sets, 'id': 'qsets-edit'},
-                 {'header': 'Question sets you own', 'qsets': owned_sets, 'id': 'qsets-owned'}]
+    all_sets  = [{'header': 'Upcoming question sets', 'qsets': upcoming_sets, 'id': 'qsets-write'},
+                 {'header': 'Completed question sets', 'qsets': completed_sets, 'id': 'qsets-complete'}]
 
     print all_sets
     return render_to_response('question_sets.html', {'question_set_list': all_sets, 'user': writer},
@@ -213,6 +198,9 @@ def edit_question_set(request, qset_id):
     total_tu_written = 0
     total_bs_written = 0
     comment_tab_list = []
+    tu_needed = 0
+    bs_needed = 0
+    set_pct_complete = 0
 
     role = get_role_no_owner(user, qset)
 
@@ -220,99 +208,63 @@ def edit_question_set(request, qset_id):
         messages.error(request, 'You are not authorized to view information about this tournament!')
         return HttpResponseRedirect('/failure.html/')
 
-    if request.method == 'POST' and (user == qset.owner or user in qset_editors):        
-        form = QuestionSetForm(data=request.POST)
-        if form.is_valid():
-            qset = QuestionSet.objects.get(id=qset_id)
-            qset.name = form.cleaned_data['name']
-            qset.date = form.cleaned_data['date']
-            qset.distribution = form.cleaned_data['distribution']
-            qset.num_packets = form.cleaned_data['num_packets']
-            qset.char_count_ignores_pronunciation_guides = form.cleaned_data['char_count_ignores_pronunciation_guides']
-            qset.max_acf_tossup_length = form.cleaned_data['max_acf_tossup_length']
-            qset.max_acf_bonus_length = form.cleaned_data['max_acf_bonus_length']
-            qset.max_vhsl_bonus_length = form.cleaned_data['max_vhsl_bonus_length']
-            qset.save()
-            cache.clear()
+    if request.method == 'POST':        
+        if (user == qset.owner or user in qset_editors):
+            form = QuestionSetForm(data=request.POST)
+            if form.is_valid():
+                qset = QuestionSet.objects.get(id=qset_id)
+                qset.name = form.cleaned_data['name']
+                qset.date = form.cleaned_data['date']
+                qset.distribution = form.cleaned_data['distribution']
+                qset.num_packets = form.cleaned_data['num_packets']
+                qset.char_count_ignores_pronunciation_guides = form.cleaned_data['char_count_ignores_pronunciation_guides']
+                qset.max_acf_tossup_length = form.cleaned_data['max_acf_tossup_length']
+                qset.max_acf_bonus_length = form.cleaned_data['max_acf_bonus_length']
+                qset.max_vhsl_bonus_length = form.cleaned_data['max_vhsl_bonus_length']
+                qset.save()
+                cache.clear()
 
-            tossups, tossup_dict, bonuses, bonus_dict = get_tossup_and_bonuses_in_set(qset, question_limit=30, preview_only=True)
+                tossups, tossup_dict, bonuses, bonus_dict = get_tossup_and_bonuses_in_set(qset, question_limit=30, preview_only=True)
 
-            if user == qset.owner:
-                read_only = False
+                if user == qset.owner:
+                    read_only = False
+                else:
+                    read_only = True
+
+                set_status, total_tu_req, total_bs_req, tu_needed, bs_needed, set_pct_complete = get_questions_remaining(qset)
+                writer_stats = get_writer_questions_remaining(qset, total_tu_req, total_bs_req)
+                                                                
+                comment_tab_list = get_comment_tab_list(tossup_dict, bonus_dict)
+
+                return render_to_response('edit_question_set.html',
+                                          {'form': form,
+                                           'qset': qset,
+                                           'user': user,
+                                           'editors': [ed for ed in qset_editors if ed != qset.owner],
+                                           'writers': qset.writer.all(),
+                                           'writer_stats': writer_stats,
+                                           'upload_form': QuestionUploadForm(),
+                                           'set_status': set_status,
+                                           'set_pct_complete': '{0:0.2f}%'.format(set_pct_complete),
+                                           'set_pct_progress_bar': '{0:0.0f}%'.format(set_pct_complete),
+                                           'tu_needed': tu_needed,
+                                           'bs_needed': bs_needed,
+                                           'tossups': tossups,
+                                           'bonuses': bonuses,
+                                           'packets': qset.packet_set.all(),
+                                           'comment_list': comment_tab_list,
+                                           'role': role,
+                                           'message': 'Your changes have been successfully saved.',
+                                           'message_class': 'alert-success'},
+                                          context_instance=RequestContext(request))
             else:
-                read_only = True
-
-            entries = qset.setwidedistributionentry_set.all().order_by('dist_entry__category', 'dist_entry__subcategory')
-            for entry in sorted(entries):
-                tu_required = entry.num_tossups
-                bs_required = entry.num_bonuses
-                # TODO: really fix extra questions increasing set completion; this is temporary
-                tu_written = qset.tossup_set.filter(category=entry.dist_entry).count()
-                bs_written = qset.bonus_set.filter(category=entry.dist_entry).count()
-                tu_written_for_total = min(tu_written, tu_required)
-                bs_written_for_total = min(bs_written, bs_required)
-                total_tu_req += tu_required
-                total_bs_req += bs_required
-                total_bs_written += bs_written_for_total
-                total_tu_written += tu_written_for_total
-
-                set_status[str(entry.dist_entry)] = {'tu_req': tu_required,
-                                                     'tu_in_cat': tu_written,
-                                                     'bs_req': bs_required,
-                                                     'bs_in_cat': bs_written,
-                                                     'category_id': entry.dist_entry.id
-                                                     }
-            set_pct_complete = (float(total_tu_written + total_bs_written) * 100) / float(total_tu_req + total_bs_req)
-
-            for writer in qset_writers:
-                writer_tu_written = len(qset.tossup_set.filter(author=writer))
-                writer_bonus_written = len(qset.bonus_set.filter(author=writer))
-                writer_question_percent = (float(writer_tu_written + writer_bonus_written) * 100) / float(total_tu_req + total_bs_req)
-                
-                writer_stats[writer.user.username] = {'tu_written': writer_tu_written,
-                                                            'bonus_written': writer_bonus_written,
-                                                            'question_percent': writer_question_percent,
-                                                            'writer': writer}
-            for writer in qset_editors:
-                writer_tu_written = len(qset.tossup_set.filter(author=writer))
-                writer_bonus_written = len(qset.bonus_set.filter(author=writer))
-                writer_question_percent = (float(writer_tu_written + writer_bonus_written) * 100) / float(total_tu_req + total_bs_req)
-                
-                
-                writer_stats[writer.user.username] = {'tu_written': writer_tu_written,
-                                                            'bonus_written': writer_bonus_written,
-                                                            'question_percent': writer_question_percent,
-                                                            'writer': writer}
-                                                            
-            comment_tab_list = get_comment_tab_list(tossup_dict, bonus_dict)
-
-            return render_to_response('edit_question_set.html',
-                                      {'form': form,
-                                       'qset': qset,
-                                       'user': user,
-                                       'editors': [ed for ed in qset_editors if ed != qset.owner],
-                                       'writers': qset.writer.all(),
-                                       'writer_stats': writer_stats,
-                                       'upload_form': QuestionUploadForm(),
-                                       'set_status': set_status,
-                                       'set_pct_complete': '{0:0.2f}%'.format(set_pct_complete),
-                                       'set_pct_progress_bar': '{0:0.0f}%'.format(set_pct_complete),
-                                       'tu_needed': total_tu_req - total_tu_written,
-                                       'bs_needed': total_bs_req - total_bs_written,
-                                       'tossups': tossups,
-                                       'bonuses': bonuses,
-                                       'packets': qset.packet_set.all(),
-                                       'comment_list': comment_tab_list,
-                                       'role': role,
-                                       'message': 'Your changes have been successfully saved.',
-                                       'message_class': 'alert-success'},
-                                      context_instance=RequestContext(request))
+                qset_editors = []
         else:
-            qset_editors = []
+            render_to_response('failure.html', {'message': 'You are not authorized to change this set!'})
     else:
         print "Begin edit_question_set get", time.strftime("%H:%M:%S")
         if user not in qset_editors and user != qset.owner and user not in qset.writer.all():
-			# Just redirect to main in this case of no permissions
+            # Just redirect to main in this case of no permissions
             # TODO: a better story
             return HttpResponseRedirect('/main.html')
 
@@ -321,7 +273,7 @@ def edit_question_set(request, qset_id):
         if user not in qset_editors and user != qset.owner:
             form = QuestionSetForm(instance=qset, read_only=True)
             read_only = True
-            message = 'You are not authorized to edit this tournament.'
+            message = ''
         else:
             if user == qset.owner:
                 read_only = False
@@ -329,54 +281,14 @@ def edit_question_set(request, qset_id):
                 read_only = True
             form = QuestionSetForm(instance=qset)
 
-        entries = qset.setwidedistributionentry_set.all().order_by('dist_entry__category', 'dist_entry__subcategory')
-        for entry in entries:
-            tu_required = entry.num_tossups
-            bs_required = entry.num_bonuses
-            # TODO: really fix extra questions increasing set completion; this is temporary
-            tu_written = qset.tossup_set.filter(category=entry.dist_entry).count()
-            bs_written = qset.bonus_set.filter(category=entry.dist_entry).count()
-            tu_written_for_total = min(tu_written, tu_required)
-            bs_written_for_total = min(bs_written, bs_required)
-            total_tu_req += tu_required
-            total_bs_req += bs_required
-            total_bs_written += bs_written_for_total
-            total_tu_written += tu_written_for_total
-            set_status[str(entry.dist_entry)] = {'tu_req': tu_required,
-                                                     'tu_in_cat': tu_written,
-                                                     'bs_req': bs_required,
-                                                     'bs_in_cat': bs_written,
-                                                     'category_id': entry.dist_entry.id}
-        set_pct_complete = (float(total_tu_written + total_bs_written) * 100) / float(total_tu_req + total_bs_req)
-
-        for writer in qset_writers:
-            writer_tu_written = len(qset.tossup_set.filter(author=writer))
-            writer_bonus_written = len(qset.bonus_set.filter(author=writer))
-            writer_question_percent = (float(writer_tu_written + writer_bonus_written) * 100) / float(total_tu_req + total_bs_req)
-            
-            writer_stats[writer.user.username] = {'tu_written': writer_tu_written,
-                                                        'bonus_written': writer_bonus_written,
-                                                        'question_percent': writer_question_percent,
-                                                        'writer': writer}
-        for writer in qset_editors:
-            writer_tu_written = len(qset.tossup_set.filter(author=writer))
-            writer_bonus_written = len(qset.bonus_set.filter(author=writer))
-            writer_question_percent = (float(writer_tu_written + writer_bonus_written) * 100) / float(total_tu_req + total_bs_req)
-            
-            
-            writer_stats[writer.user.username] = {'tu_written': writer_tu_written,
-                                                        'bonus_written': writer_bonus_written,
-                                                        'question_percent': writer_question_percent,
-                                                        'writer': writer}
+        set_status, total_tu_req, total_bs_req, tu_needed, bs_needed, set_pct_complete = get_questions_remaining(qset)
+        writer_stats = get_writer_questions_remaining(qset, total_tu_req, total_bs_req)
                                                                 
         comment_tab_list = get_comment_tab_list(tossup_dict, bonus_dict)                    
 
     print "End edit_question_set get", time.strftime("%H:%M:%S")
-    
-    # TODO: Remove this debugging code
-    edit_url = 'edit_question_set.html'
-    
-    return render_to_response(edit_url,
+        
+    return render_to_response('edit_question_set.html',
                               {'form': form,
                                'user': user,
                                'editors': [ed for ed in qset_editors if ed != qset.owner],
@@ -385,8 +297,8 @@ def edit_question_set(request, qset_id):
                                'set_status': set_status,
                                'set_pct_complete': '{0:0.2f}%'.format(set_pct_complete),
                                'set_pct_progress_bar': '{0:0.0f}%'.format(set_pct_complete),
-                               'tu_needed': total_tu_req - total_tu_written,
-                               'bs_needed': total_bs_req - total_bs_written,
+                               'tu_needed': tu_needed,
+                               'bs_needed': bs_needed,
                                'upload_form': QuestionUploadForm(),
                                'tossups': tossups,
                                'bonuses': bonuses,
@@ -427,7 +339,7 @@ def categories(request, qset_id, category_id):
     else:
         tossups = Tossup.objects.filter(question_set=qset).filter(category=category_id)
         bonuses = Bonus.objects.filter(question_set=qset).filter(category=category_id)
-        	
+            
     return render_to_response('categories.html',
         {
         'user': user,
@@ -457,7 +369,7 @@ def view_all_questions(request, qset_id):
                                   context_instance=RequestContext(request))        
     else:
         tossups, tossup_dict, bonuses, bonus_dict = get_tossup_and_bonuses_in_set(qset, question_limit=10000, preview_only=True)
-        	
+            
     return render_to_response('view_all_questions.html',
         {
         'user': user,
@@ -486,7 +398,7 @@ def view_all_comments(request, qset_id):
     else:
         tossups, tossup_dict, bonuses, bonus_dict = get_tossup_and_bonuses_in_set(qset, question_limit=10000, preview_only=True)
         comment_tab_list = get_comment_tab_list(tossup_dict, bonus_dict, comment_limit=10000)
-        	
+            
     return render_to_response('view_all_comments.html',
         {
         'user': user,
@@ -503,6 +415,7 @@ def question_set_distribution(request, qset_id):
     qset_writers = qset.writer.all()
     set_distro_formset = []
     tiebreak_formset = []
+    read_only = True
 
     message = ''
     if user not in qset_editors and user != qset.owner and user not in qset.writer.all():
@@ -513,15 +426,20 @@ def question_set_distribution(request, qset_id):
                                   context_instance=RequestContext(request))                
     elif user == qset.owner:
         set_distro_formset = create_set_distro_formset(qset)
+        tiebreak_formset = create_tiebreak_formset(qset)    
+        read_only = False
+    else:
+        set_distro_formset = create_set_distro_formset(qset)
         tiebreak_formset = create_tiebreak_formset(qset)        
-        	
+            
     return render_to_response('question_set_distribution.html',
         {
         'user': user,
         'set_distro_formset': set_distro_formset,
         'tiebreak_formset': tiebreak_formset,
         'qset': qset,
-        'message': message},
+        'message': message,
+        'read_only': read_only},
         context_instance=RequestContext(request))	
 
 @login_required
@@ -1058,8 +976,6 @@ def edit_tossup(request, tossup_id):
         elif user in qset.writer.all():
             read_only = True
             form = None
-            message = 'You are only authorized to view, not to edit, this question!'
-            message_class = 'alert-box warning'
         else:
             read_only = True
             tossup = None
@@ -1180,8 +1096,6 @@ def edit_bonus(request, bonus_id):
         elif user in qset.writer.all():
             read_only = True
             form = None
-            message = 'You are only authorized to view, not to edit, this question!'
-            message_class = 'alert-box warning'
         else:
             read_only = True
             bonus = None
@@ -1244,6 +1158,7 @@ def edit_bonus(request, bonus_id):
                 except InvalidBonus as ex:
                     message = str(ex)
                     message_class = 'alert-box warning'
+                    read_only = False
 
             elif form.is_valid() and not can_change:
                 message = 'This bonus is locked and can only be changed by an editor!'
@@ -1336,7 +1251,8 @@ def delete_writer(request):
         qset = QuestionSet.objects.get(id=qset_id)
         writer_id = request.POST['writer_id']
         writer = qset.writer.get(id=writer_id)
-        if user == qset.owner:
+        role = get_role_no_owner(user, qset)
+        if role == "editor":
             qset.writer.remove(writer)
             cache.clear()
             message = 'Writer removed'
@@ -1359,13 +1275,37 @@ def delete_editor(request):
         qset = QuestionSet.objects.get(id=qset_id)
         editor_id = request.POST['editor_id']
         editor = qset.editor.get(id=editor_id)
-        if user == qset.owner:
+        role = get_role_no_owner(user, qset)
+        if role == "editor":
             qset.editor.remove(editor)
             cache.clear()
             message = 'Editor removed'
             message_class = 'alert-box success'
         else:
             message = 'You are not authorized to remove editors from this set!'
+            message_class = 'alert-box warning'
+
+    return HttpResponse(json.dumps({'message': message, 'message_class': message_class}))
+
+@login_required
+def delete_set(request):
+    user = request.user.writer
+    message = ''
+    message_class = ''
+    read_only = True
+
+    print("In editor removed")
+    if request.method == 'POST':
+        qset_id = request.POST['qset_id']
+        qset = QuestionSet.objects.get(id=qset_id)
+        role = get_role_no_owner(user, qset)
+        if role == "editor":
+            qset.delete()
+            cache.clear()
+            message = 'Set deleted'
+            message_class = 'alert-box success'
+        else:
+            message = 'You are not authorized to delete this set!'
             message_class = 'alert-box warning'
 
     return HttpResponse(json.dumps({'message': message, 'message_class': message_class}))
@@ -1400,6 +1340,45 @@ def delete_comment(request):
 
     return HttpResponse(json.dumps({'message': message, 'message_class': message_class}))
 
+@login_required
+def delete_all_comments(request):
+    user = request.user.writer
+    message = ''
+    message_class = ''
+    read_only = True
+
+    tossup_content_type_id = ContentType.objects.get_for_model(Tossup).id
+    bonus_content_type_id = ContentType.objects.get_for_model(Bonus).id
+
+    if request.method == 'POST':
+        qset_id = request.POST['qset_id']
+        qset = QuestionSet.objects.get(id=qset_id)
+        qset_editors = qset.editor.all()
+        question_type = request.POST['question_type']
+        question_id = request.POST['question_id']
+
+        if (question_type == 'tossup'):
+            comment_list = Comment.objects.filter(content_type_id=tossup_content_type_id).filter(object_pk=question_id).order_by('submit_date')
+        else:
+            comment_list = Comment.objects.filter(content_type_id=bonus_content_type_id).filter(object_pk=question_id).order_by('submit_date')
+
+        if (comment_list is None):
+            message = 'Error retrieving comments.'
+            message_class = 'alert-box warning'
+        else:
+            if user in qset_editors:
+                for comment in comment_list:
+                    comment.is_removed = True
+                    comment.save()
+                    cache.clear()
+
+                message = 'Comments removed'
+                message_class = 'alert-box success'
+            else:
+                message = 'You are not authorized to remove comments from this set!'
+                message_class = 'alert-box warning'
+
+    return HttpResponse(json.dumps({'message': message, 'message_class': message_class}))
 
 @login_required
 def add_packets(request, qset_id):
@@ -1418,26 +1397,38 @@ def add_packets(request, qset_id):
                 packet_name = form.cleaned_data['packet_name']
                 name_base = form.cleaned_data['name_base']
                 num_packets = form.cleaned_data['num_packets']
-                if packet_name is not None and (name_base is None or num_packets is None):
-                    new_packet = Packet()
-                    new_packet.packet_name = packet_name
-                    new_packet.created_by = user
-                    new_packet.question_set = qset
-                    new_packet.save()
-                    cache.clear()
-                    message = 'Your packet named {0} has been created.'.format(packet_name)
-                    message_class = 'alert-box success'
-
-                elif name_base is not None and num_packets is not None:
-                    for i in range(1, num_packets + 1):
+                if packet_name and len(packet_name.strip()) > 0 and (name_base is None or num_packets is None):
+                    if Packet.objects.filter(question_set=qset, packet_name=packet_name).exists():
+                        message = 'The packet name "{0}" arleady exists.'.format(packet_name)
+                        message_class = 'alert-box warning'
+                    else:
                         new_packet = Packet()
-                        new_packet.packet_name = '{0!s} {1:02}'.format(name_base, i)
+                        new_packet.packet_name = packet_name
                         new_packet.created_by = user
                         new_packet.question_set = qset
                         new_packet.save()
                         cache.clear()
-                    message = 'Your {0} packets with the base name {1} have been created.'.format(num_packets, name_base)
-                    message_class = 'alert-box success'
+                        message = 'Your packet named {0} has been created.'.format(packet_name)
+                        message_class = 'alert-box success'
+
+                elif name_base and len(name_base.strip()) > 0 and num_packets is not None:
+                    create_all_failed = False
+                    for i in range(1, num_packets + 1):
+                        new_packet = Packet()
+                        packet_name = '{0!s} {1:02}'.format(name_base, i)
+                        if Packet.objects.filter(question_set=qset, packet_name=packet_name).exists():
+                            message = 'The packet name "{0}" arleady exists.'.format(packet_name)
+                            message_class = 'alert-box warning'
+                            create_all_failed = True
+                            break
+                        new_packet.packet_name = packet_name
+                        new_packet.created_by = user
+                        new_packet.question_set = qset
+                        new_packet.save()
+                        cache.clear()
+                    if not create_all_failed:
+                        message = 'Your {0} packet(s) with the base name {1} have been created.'.format(num_packets, name_base)
+                        message_class = 'alert-box success'
                 else:
                     message = 'You must enter either the name for an individual packet or a base name and the number of packets to create!'
                     message_class = 'alert-box warning'
@@ -1798,6 +1789,8 @@ def edit_distribution(request, dist_id=None):
                     if dist_form.is_valid() and formset.is_valid():
                         dist = Distribution.objects.get(id=dist_id)
                         dist.name = dist_form.cleaned_data['name']
+                        dist.save()
+
                         qsets = dist.questionset_set.all()
                         for form in formset:
                             if form.cleaned_data != {}:
@@ -2063,7 +2056,7 @@ def type_questions(request, qset_id=None):
             form = TypeQuestionsForm(request.POST)
             if form.is_valid():
                 question_data = request.POST['questions'].splitlines()
-                tossups, bonuses, tossup_errors, bonus_errors = parse_packet_data(question_data)
+                tossups, bonuses, tossup_errors, bonus_errors = parse_packet_data(question_data, qset)
 
                 return render_to_response('type_questions_preview.html',
                                          {'tossups': tossups,
@@ -2077,7 +2070,7 @@ def type_questions(request, qset_id=None):
                                           context_instance=RequestContext(request))
             else:
                 question_data = request.POST['questions']
-                tossups, bonuses = parse_packet_data(question_data)
+                tossups, bonuses = parse_packet_data(question_data, qset)
                 messages.error(request, form.questions.errors)
 
         else:
@@ -2109,6 +2102,72 @@ def type_questions(request, qset_id=None):
                                       context_instance=RequestContext(request))
 
 @login_required
+def type_questions_edit(request, question_type, question_id):
+    user = request.user.writer
+    
+    if (question_type == "tossup"):
+        question = Tossup.objects.get(id=question_id)
+    elif (question_type == "bonus"):
+        question = Bonus.objects.get(id=question_id)
+    
+    qset = question.question_set
+    packet = question.packet
+    message = ''
+    message_class = ''
+    read_only = True
+    role = get_role_no_owner(user, qset)
+
+    if request.method == 'POST':
+        if (user == qset.owner or user in qset.editor.all() or user in qset.writer.all()):
+            form = TypeQuestionsForm(request.POST)
+            if form.is_valid():
+                question_data = request.POST['questions'].splitlines()
+                tossups, bonuses, tossup_errors, bonus_errors = parse_packet_data(question_data, qset)
+
+                return render_to_response('type_questions_edit_preview.html',
+                                         {'tossups': tossups,
+                                          'bonuses': bonuses,
+                                          'tossup_errors': tossup_errors,
+                                          'bonus_errors': bonus_errors,
+                                          'message': 'Please verify that these questions have been correctly parsed. Hitting "Submit" will '\
+                                          'commit these questions to the database. If you see any mistakes, hit "Cancel" and correct your mistakes.',
+                                          'qset': qset,
+                                          'user': user},
+                                          context_instance=RequestContext(request))
+            else:
+                question_data = request.POST['questions']
+                tossups, bonuses = parse_packet_data(question_data, qset)
+                messages.error(request, form.questions.errors)
+
+        else:
+            tossups = None
+            bonuses = None
+            messages.error(request, 'You do not have permission to edit this question')
+            return render_to_response('type_questions_edit.html',
+                                     {'tossups': tossups,
+                                      'bonuses': bonuses,
+                                      'qset': qset,
+                                      'user': user},
+                                      context_instance=RequestContext(request))
+    elif request.method == 'GET':
+        if (user == qset.owner or user in qset.editor.all() or user in qset.writer.all()):
+            dist_entries = qset.setwidedistributionentry_set.all().order_by('dist_entry__category', 'dist_entry__subcategory')
+
+            form = TypeQuestionsForm(request.POST)
+            return render_to_response('type_questions_edit.html',
+                                     {'user': user,
+                                      'qset': qset,
+                                      'form': form,
+                                      'dist_entries': dist_entries},
+                                      context_instance=RequestContext(request))
+        else:
+            messages.error(request, 'You do not have permission to edit this question')
+            return render_to_response('type_questions_edit.html',
+                                     {'qset': qset,
+                                      'user': user},
+                                      context_instance=RequestContext(request))
+
+@login_required
 def complete_upload(request):
     user = request.user.writer
     if request.method == 'POST':
@@ -2117,7 +2176,7 @@ def complete_upload(request):
 
         num_tossups = int(request.POST['num-tossups'])
         num_bonuses = int(request.POST['num-bonuses'])
-        categories = DistributionEntry.objects.all()
+        categories = DistributionEntry.objects.filter(distribution=qset.distribution)
         questionTypes = QuestionType.objects.all()
 
         new_tossups = []
@@ -2599,8 +2658,8 @@ def export_question_set(request, qset_id, output_format):
     qset = QuestionSet.objects.get(id=qset_id)
     role = get_role_no_owner(user, qset)
     
-    tossup_content_type_id = ContentType.objects.get(name="tossup")
-    bonus_content_type_id = ContentType.objects.get(name="bonus")    
+    tossup_content_type_id = ContentType.objects.get_for_model(Tossup).id
+    bonus_content_type_id = ContentType.objects.get_for_model(Bonus).id
     
     if request.method == 'GET':
         if (role == 'editor'):
@@ -2613,25 +2672,31 @@ def export_question_set(request, qset_id, output_format):
 
                 writer = unicodecsv.writer(response, encoding='utf-8', quoting=csv.QUOTE_ALL)
 
-                writer.writerow(["Tossup Question", "Answer", "Category", "Author", "Edited", "Packet", "Question Number", "Comments"])
+                writer.writerow(["Tossup Question", "Answer", "Category", "Author", "Edited", "Packet", "Question Number", "Comments","Id"])
                 for tossup in tossups:
                     comment_list = Comment.objects.filter(content_type_id=tossup_content_type_id).filter(object_pk=tossup.id).order_by('submit_date')
                     comment_string = ""
                     for comment in comment_list:
                         comment_string = comment_string + str(comment.user) + ": " + comment.comment + "||"
                     
-                    writer.writerow([remove_new_lines(tossup.tossup_text), remove_new_lines(tossup.tossup_answer), tossup.category, tossup.author.get_last_name(), tossup.edited, tossup.packet, tossup.question_number, remove_new_lines(comment_string)])
+                    writer.writerow([remove_new_lines(tossup.tossup_text), remove_new_lines(tossup.tossup_answer), tossup.category, tossup.author.get_last_name(), tossup.edited, tossup.packet, tossup.question_number, remove_new_lines(comment_string), tossup.id])
 
                 writer.writerow([])
 
-                writer.writerow(["Bonus Leadin", "Bonus Part 1", "Bonus Answer 1", "Bonus Part 2", "Bonus Answer 2", "Bonus Part 3", "Bonus Answer 3", "Category", "Author", "Edited", "Packet", "Question Number", "Comments"])
+                writer.writerow(["Bonus Leadin", "Bonus Part 1", "Bonus Answer 1", "Bonus Part 2", "Bonus Answer 2", "Bonus Part 3", "Bonus Answer 3", "Category", "Author", "Edited", "Packet", "Question Number", "Comments", "Id"])
                 for bonus in bonuses:
                     comment_list = Comment.objects.filter(content_type_id=bonus_content_type_id).filter(object_pk=bonus.id).order_by('submit_date')
                     comment_string = ""
                     for comment in comment_list:
                         comment_string = comment_string + str(comment.user) + ": " + comment.comment + "||"
                     
-                    writer.writerow([remove_new_lines(bonus.leadin), remove_new_lines(bonus.part1_text), remove_new_lines(bonus.part1_answer), remove_new_lines(bonus.part2_text), remove_new_lines(bonus.part2_answer), remove_new_lines(bonus.part3_text), remove_new_lines(bonus.part3_answer), bonus.category, bonus.author.get_last_name(), bonus.edited, bonus.packet, bonus.question_number, remove_new_lines(comment_string)])
+                    writer.writerow([remove_new_lines(bonus.leadin), remove_new_lines(bonus.part1_text), remove_new_lines(bonus.part1_answer), remove_new_lines(bonus.part2_text), remove_new_lines(bonus.part2_answer), remove_new_lines(bonus.part3_text), remove_new_lines(bonus.part3_answer), bonus.category, bonus.author.get_last_name(), bonus.edited, bonus.packet, bonus.question_number, remove_new_lines(comment_string), bonus.id])
+                    
+                writer.writerow([])
+                entries = qset.setwidedistributionentry_set.all()                
+                writer.writerow(["Category", "Subcategory", "Total Tossups", "Total Bonuses"])
+                for entry in entries:
+                    writer.writerow([entry.dist_entry.category, entry.dist_entry.subcategory, entry.num_tossups, entry.num_bonuses])
 
                 return response
             elif (output_format == "pdf"):
@@ -2935,6 +3000,8 @@ def questions_remaining(request, qset_id):
     total_bs_req = 0
     total_tu_written = 0
     total_bs_written = 0
+    tu_needed = 0
+    bs_needed = 0
 
     role = get_role_no_owner(user, qset)
 
@@ -2943,33 +3010,15 @@ def questions_remaining(request, qset_id):
         return HttpResponseRedirect('/failure.html/')
 
     if request.method == 'GET':
-        entries = qset.setwidedistributionentry_set.all().order_by('dist_entry__category', 'dist_entry__subcategory')
-        for entry in entries:
-            tu_required = entry.num_tossups
-            bs_required = entry.num_bonuses
-            tu_written = qset.tossup_set.filter(category=entry.dist_entry).count()
-            bs_written = qset.bonus_set.filter(category=entry.dist_entry).count()
-            total_tu_req += tu_required
-            total_bs_req += bs_required
-            total_bs_written += bs_written
-            total_tu_written += tu_written
-
-            # Only include categories with some questions left to write
-            if (tu_written < tu_required or bs_written < bs_required):
-                set_status[str(entry.dist_entry)] = {'tu_req': tu_required,
-                                                         'tu_in_cat': tu_written,
-                                                         'bs_req': bs_required,
-                                                         'bs_in_cat': bs_written,
-                                                         'category_id': entry.dist_entry.id}
-        set_pct_complete = (float(total_tu_written + total_bs_written) * 100) / float(total_tu_req + total_bs_req)
+        set_status, total_tu_req, total_bs_req, tu_needed, bs_needed, set_pct_complete = get_questions_remaining(qset)
 
     return render_to_response('questions_remaining.html',
                              {'user': user,
                               'set_status': set_status,
                               'set_pct_complete': '{0:0.2f}%'.format(set_pct_complete),
                               'set_pct_progress_bar': '{0:0.0f}%'.format(set_pct_complete),
-                              'tu_needed': total_tu_req - total_tu_written,
-                              'bs_needed': total_bs_req - total_bs_written,
+                              'tu_needed': tu_needed,
+                              'bs_needed': bs_needed,
                               'qset': qset,
                               'message': message},
                               context_instance=RequestContext(request))
@@ -3528,7 +3577,7 @@ def contributor(request, qset_id, writer_id):
                          'bonuses_written': bonuses.count()
                          }
             
-        	
+            
     return render_to_response('contributor.html',
         {
         'user': user,
@@ -3538,19 +3587,3 @@ def contributor(request, qset_id, writer_id):
         'qset': qset,
         'writer': writer},
         context_instance=RequestContext(request))	
-
-# @login_required
-# def password(request):
-#
-#     user = request.user
-#
-#     if request.method == 'GET':
-#         form = PasswordChangeForm(user)
-#
-#         return render_to_response('password.html',
-#             {'form': form,
-#              'user': user},
-#             context_instance=RequestContext(request))
-#
-#     elif request.method == 'POST':
-#         pass

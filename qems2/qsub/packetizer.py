@@ -6,6 +6,7 @@ import random
 import string
 
 from qems2.qsub.models import *
+from qems2.qsub.model_utils import *
 
 # TODO: Add tests
 def create_acf_packet(qset, packet_name, created_by, regular_distribution, tiebreaker_distribution):
@@ -374,28 +375,27 @@ def assign_vhsl_bonuses_to_period(qset, period, distribution):
 def get_parents_from_category_entry(category_entry):
     if (category_entry.sub_category_name is None or category_entry.sub_category_name == ''):
         return category_entry, None, None
-    elif (category_entry.sub_sub_category_name is None or category_entry.sub_sub_category_name == ''):
-        category = CategoryEntry.objects.get(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=None)
+
+    category_query = CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=None)
+    category = None if (not category_query.exists()) else category_query[0]
+    if (category_entry.sub_sub_category_name is None or category_entry.sub_sub_category_name == ''):
         return category, category_entry, None
     else:
-        category = CategoryEntry.objects.get(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=None)
-        sub_category = CategoryEntry.objects.get(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=category_entry.sub_category_name, sub_sub_category_name=None)
+        sub_category_query = CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=category_entry.sub_category_name, sub_sub_category_name=None)
+        sub_category = None if (not sub_category_query.exists()) else sub_category_query[0]
         return category, sub_category, category_entry
 
 # Gets the current entry and any children of this category.  For instance,
 # "History" could return "History" and "History - European" and
 # "History - European - British"
 def get_children_from_category_entry(category_entry):
-    children = []
     if (category_entry.sub_category_name is None or category_entry.sub_category_name == ''):
-        children.append(CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name))
+        return CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name)
     elif (category_entry.sub_sub_category_name is None or category_entry.sub_sub_category_name == ''):
-        children.append(CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=category_entry.sub_category_name))
+        return CategoryEntry.objects.filter(distribution=category_entry.distribution, category_name=category_entry.category_name, sub_category_name=category_entry.sub_category_name)
     else:
         # subsub categories don't have children
-        children.append(category_entry)
-     
-    return children
+        return [category_entry]
 
 # TODO: Add tests
 def get_period_entries_from_category_entry_with_parents(category_entry, period):
@@ -529,11 +529,13 @@ def get_unassigned_acf_tossups(qset):
     return acf_tossups
     
 def get_unassigned_acf_bonuses(qset):
-    acf_bonuses = Bonus.objects.filter(question_set=qset, question_type="ACF-style bonus", packet=None)
+    question_type = get_question_type_from_string("ACF-style bonus")
+    acf_bonuses = Bonus.objects.filter(question_set=qset, question_type=question_type, packet=None)
     return acf_bonuses
     
 def get_unassigned_vhsl_bonuses(qset):
-    vhsl_bonuses = Bonus.objects.filter(question_set=qset, question_type="VHSL bonus", packet=None)
+    question_type = get_question_type_from_string("VHSL bonus")
+    vhsl_bonuses = Bonus.objects.filter(question_set=qset, question_type=question_type, packet=None)
     return vhsl_bonuses
     
 def get_assigned_acf_tossups_in_period(qset, period):
@@ -541,11 +543,13 @@ def get_assigned_acf_tossups_in_period(qset, period):
     return acf_tossups
     
 def get_assigned_acf_bonuses_in_period(qset, period):
-    acf_bonuses = Bonus.objects.filter(question_set=qset, question_type="ACF-style bonus", period=period)
+    question_type = get_question_type_from_string("ACF-style bonus")
+    acf_bonuses = Bonus.objects.filter(question_set=qset, question_type=question_type, period=period)
     return acf_bonuses
 
 def get_assigned_vhsl_bonuses_in_period(qset, period):
-    vhsl_bonuses = Bonus.objects.filter(question_set=qset, question_type="VHSL bonus", period=period)
+    question_type = get_question_type_from_string("VHSL bonus")
+    vhsl_bonuses = Bonus.objects.filter(question_set=qset, question_type=question_type, period=period)
     return vhsl_bonuses
 
 # Clear packet information from each question
@@ -571,22 +575,26 @@ def reset_category_counts(qset, reset_totals=False):
         pwe.reset_current_values()
         if (reset_totals):
             pwe.reset_total_values()
+        pwe.save()
         
         periods = Period.objects.filter(period_wide_entry=pwe)
         for period in periods:
             period.reset_current_values()
+            period.save()
         
         period_wide_category_entries = PeriodWideCategoryEntry.objects.filter(period_wide_entry=pwe)        
         for pwce in period_wide_category_entries:
             pwce.reset_current_values()
             if (reset_totals):
                 pwce.reset_total_values()
+            pwce.save()
             
             one_period_category_entries = OnePeriodCategoryEntry.objects.filter(period_wide_category_entry=pwce)
             for opce in one_period_category_entries:
                 opce.reset_current_values()
                 if (reset_totals):
                     opce.reset_total_values()
+                opce.save()
 
 class DistributionRequirement():
     acf_tossups_written = 0

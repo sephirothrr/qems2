@@ -1,25 +1,18 @@
-from django.contrib.auth.forms import UserCreationForm, UserChangeForm, ReadOnlyPasswordHashField, PasswordChangeForm
-from django.contrib.auth.models import User
-from django.db import models
 from models import *
 from utils import *
 from django import forms
 from django.forms import ValidationError
 from django.utils.translation import ugettext, ugettext_lazy as _
 from django.db.models import Q
-from registration.forms import RegistrationForm
 
-class RegistrationFormWithName(RegistrationForm):
+class RegistrationFormWithName(forms.Form):
     first_name = forms.CharField(max_length=200)
     last_name = forms.CharField(max_length=200)
-    
-    def clean(self):
-        cleaned_data = super(RegistrationFormWithName, self).clean()
-        email = cleaned_data.get("email")
-        email_list = User.objects.filter(email=email)
-        if (len(email_list) != 0):
-            print "dupe: " + str(len(email_list))
-            self.add_error('email', ValidationError(_('Duplicate e-mail: %(value)s'), params={'value': email},))
+
+    def signup(self, request, user):
+        user.first_name = self.cleaned_data['first_name']
+        user.last_name = self.cleaned_data['last_name']
+        user.save()
 
 class WriterQuestionSetSettingsForm(forms.ModelForm):
     
@@ -42,19 +35,6 @@ class PerCategoryWriterSettingsForm(forms.Form):
         super(PerCategoryWriterSettingsForm, self).__init__(*args, **kwargs)
         self.fields['distribution_entry_string'].widget.attrs.update({'readonly': 'readonly'})
         
-class WriterCreationForm(UserCreationForm):
-
-    class Meta:
-        model = User
-        fields = ['username', 'first_name', 'last_name', 'email']
-
-    def __init__(self, *args, **kwargs):
-
-        super(WriterCreationForm, self).__init__(*args, **kwargs)
-
-        self.fields['password2'].widget.attrs.update({'placeholder': 'Enter the same password as above, for verification.'})
-        self.fields['username'].widget.attrs.update({'placeholder': 'Thirty characters or fewer. Letters, digits, and @.-+_ are allowed.'})
-
 class WriterChangeForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
@@ -278,13 +258,15 @@ class DistributionForm(forms.ModelForm):
 
     class Meta:
         model = Distribution
-
+        fields = ['name', 'acf_tossup_per_period_count', 'acf_bonus_per_period_count', 'vhsl_bonus_per_period_count']
+        
 class TieBreakDistributionForm(forms.ModelForm):
 
     name = forms.CharField(max_length=100)
 
     class Meta:
         model = TieBreakDistribution
+        fields = '__all__'
 
 class DistributionEntryForm(forms.ModelForm):
 
@@ -312,9 +294,9 @@ class TieBreakDistributionEntryForm(forms.Form):
 
     delete = forms.BooleanField(widget=forms.CheckboxInput, required=False)
 
-    #class Meta:
-    #    model = DistributionEntry
-    #    exclude = ['distribution']
+    class Meta:
+        model = DistributionEntry
+        exclude = ['distribution']
 
 class SetWideDistributionEntryForm(forms.Form):
 
@@ -327,9 +309,9 @@ class SetWideDistributionEntryForm(forms.Form):
     category = forms.CharField(max_length=100, widget=forms.TextInput(attrs={}), required=False)
     subcategory = forms.CharField(max_length=100, widget=forms.TextInput(attrs={}), required=False)
 
-    #class Meta:
-    #    model = SetWideDistributionEntry
-    #    exclude = ['min_tossups', 'max_tossups', 'min_bonuses', 'max_bonuses', 'question_set']
+    class Meta:
+        model = SetWideDistributionEntry
+        exclude = ['min_tossups', 'max_tossups', 'min_bonuses', 'max_bonuses', 'question_set']
 
 class PacketForm(forms.Form):
 

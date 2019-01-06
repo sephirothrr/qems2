@@ -253,6 +253,28 @@ $(function () {
         }
     });
 
+    $('.delete_all_comments').click(function (e) {
+        e.preventDefault();
+        var result = confirm("Are you sure you want to delete all comments?  It can only be restored by a QEMS2 admin.");
+        if (result == true) {
+            $.post('/delete_all_comments/', { question_id: $(this).attr('value'), qset_id: $(this).attr('qset'), question_type: $(this).attr('question-type'), }, function (response) {
+                var json_response = $.parseJSON(response);
+                var dialog = $('#info-dialog').dialog({
+                    modal: true,
+                    buttons: {
+                        Ok: function () {
+                            $(this).dialog('close');
+                            window.location.reload();
+                        }
+                    }
+                })
+                dialog.append('<div class="' + json_response['message_class'] + '">' + json_response['message'] + '</div>');
+                dialog.dialog('open');
+            });
+        }
+    });
+
+
     $('.restore_tossup').click(function(e) {
         e.preventDefault();
         var result = confirm("Are you sure that you want to restore this question to this version?");
@@ -338,6 +360,30 @@ $(function () {
             });
         }
     });
+    
+    $('.delete_set').click(function(e) {
+        e.preventDefault();
+        var result = confirm("Are you sure you want to delete this question set?");
+        if (result == true) {
+            var result2 = confirm("Seriously, you really want to delete this question set?");
+            if (result2 == true) {
+                $.post('/delete_set/', {qset_id: $(this).attr('value')}, function (response) {
+                    var json_response = $.parseJSON(response);
+                    var dialog = $('#info-dialog').dialog({
+                        modal: true,
+                        buttons: {
+                            Ok: function() {
+                                $(this).dialog('close');
+                                window.location.replace('/main/');
+                            }
+                        }
+                    })
+                    dialog.append('<div class="' + json_response['message_class'] + '">' + json_response['message'] + '</div>');
+                    dialog.dialog('open');
+                });
+            }
+        }
+    });    
 
     $('#upload-dialog').dialog({
         autoOpen: false,

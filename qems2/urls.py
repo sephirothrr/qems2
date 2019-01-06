@@ -3,7 +3,6 @@ from django.contrib.auth.views import logout, login, password_change, password_c
 from django.views.generic import ListView
 from qsub.views import *
 from qsub.models import *
-from registration.backends.default.views import RegistrationView
 
 import django
 
@@ -19,22 +18,15 @@ urlpatterns = patterns('',
     # Uncomment the admin/doc line below to enable admin documentation:
     # url(r'^admin/doc/', include('django.contrib.admindocs.urls')),
 
-    # Uncomment the next line to enable the admin:
     url(r'^admin/', include(admin.site.urls)),
+    
+    # accounts
+    url(r'^accounts/', include('allauth.urls')),
+    
     (r'^main/$', main),
     (r'^$', main),
-    url(r'^accounts/register/$',
-        RegistrationView.as_view(form_class=RegistrationFormWithName),
-        name='registration_register'),        
-    (r'^accounts/', include('registration.backends.default.urls')),         
-    #(r'^register/$', register),
-    #(r'^accounts/login/$', django.contrib.auth.views.login),
-    #(r'^accounts/logout/$', django.contrib.auth.views.logout),
-    (r'^profile/$', profile),
-    (r'^password_change_done/$', django.contrib.auth.views.password_change_done),
-    (r'^password_change/$', django.contrib.auth.views.password_change, {'post_change_redirect': '/profile/',
-                                                                        'template_name': 'registration/password.html'}),
-    #(r'^password_change/$', password_change),
+    (r'^profile/$', profile),    
+    
     (r'^question_sets/$', question_sets),
     (r'^create_question_set/$', create_question_set),
     (r'^edit_question_set/(?P<qset_id>[0-9]+)/$', edit_question_set),
@@ -59,6 +51,7 @@ urlpatterns = patterns('',
     (r'^edit_packet/(?P<packet_id>[0-9]+)/$', edit_packet),
     (r'^type_questions/$', type_questions),
     (r'^type_questions/(?P<qset_id>[0-9]+)/$', type_questions),
+    (r'^type_questions_edit/(?P<question_type>.+)/(?P<question_id>[0-9]+)/$', type_questions_edit),    
     #(r'^edit_packet/(?P<packet_id>[0-9]+)/change_tossup_position/(?P<old_index>[0-9]+)/(?P<new_index>[0-9]+)$', change_tossup_order),
     #(r'^edit_packet/(?P<packet_id>[0-9]+)/change_bonus_position/(?P<old_index>[0-9]+)/(?P<new_index>[0-9]+)$', change_bonus_order),
     (r'^delete_packet/$', delete_packet),
@@ -68,7 +61,9 @@ urlpatterns = patterns('',
     (r'^export_question_set/(?P<qset_id>[0-9]+)/(?P<output_format>.+)/$', export_question_set),
     (r'^delete_writer/$', delete_writer),
     (r'^delete_editor/$', delete_editor),
+    (r'^delete_set/$', delete_set),    
     (r'^delete_comment/$', delete_comment),
+    (r'^delete_all_comments/$', delete_all_comments),
     (r'^restore_tossup/$', restore_tossup),
     (r'^restore_bonus/$', restore_bonus),
     (r'^tossup_history/(?P<tossup_id>[0-9]+)/$', tossup_history),
@@ -104,6 +99,9 @@ urlpatterns = patterns('',
     # (r'^search/', include('haystack.urls')),
     (r'^search/$', search),
     (r'^search/(?P<passed_qset_id>[0-9]+)/$', search),
+    
+    #auth
+    #url(r'^accounts/', include('allauth.urls')),
 )
 
 #import debug_toolbar

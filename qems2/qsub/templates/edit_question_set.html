@@ -15,6 +15,7 @@
 
 <h3 class="page-header">Question Set Management</h3>
 
+
 <dl class="tabs" data-tab>
     <dd class="active"><a href="#qset-info">Home</a></dd>
     <dd><a href="#questions">Recent Questions</a></dd>
@@ -27,7 +28,7 @@
     {% include "tab_group_2.html" %}
 {% endblock %}
 
-<div class="tabs-content">
+<div class="tabs-content" data-tab="">
     <div class="content active" id="qset-info">
         {% autoescape off %}
             {% if message %}
@@ -164,9 +165,18 @@
                 <strong><a href="/export_question_set/{{ qset.id }}/csv/">Export Question Set to CSV</a></strong>
             </div>
             <div class="panel header radius text-center">
+                <strong><a href="http://www.doc-ent.com/qems_packetizer/publish.htm">Download Convert CSV to Word program (requires Windows and Office)</a></strong>
+            </div>            
+            <div class="panel header radius text-center">
                 <strong><a href="/bulk_change_set/{{ qset.id }}">Make Bulk Changes to this Set</a></strong>
             </div>
         {% endif %}
+        {% if role == "editor" %}
+            <div class="panel header radius text-center">
+                <strong><a href="/delete_set/{{ qset.id }}" class="delete_set" value="{{ qset.id }}">Delete this set</a></strong>
+            </div>        
+        {% endif %}
+        
         <div class="panel header radius text-center">
             <strong><a href="/writer_question_set_settings/{{ qset.id }}">Your settings for this set</a></strong>
         </div>
@@ -185,13 +195,15 @@
                 </thead>
                 <tbody>
                     {% autoescape off %}                
-                        {% for comment in comment_tab_list %}     
-                            <tr>
-                                <td>{{ comment.comment.user }}</td>
-                                <td>{{ comment.comment.comment|comment_html }}</td>                    
-                                <td><a href="/edit_{{ comment.question_type }}/{{ comment.question_id }}">{{ comment.question_text }}</a></td>
-                                <td>{{ comment.comment.submit_date|to_short_datetime }}</td>
-                            </tr>
+                        {% for comment in comment_tab_list %}
+                            {% if not comment.is_removed %}
+                                <tr>
+                                    <td>{{ comment.comment.user }}</td>
+                                    <td>{{ comment.comment.comment|comment_html }}</td>                    
+                                    <td><a href="/edit_{{ comment.question_type }}/{{ comment.question_id }}">{{ comment.question_text }}</a></td>
+                                    <td>{{ comment.comment.submit_date|to_short_datetime }}</td>
+                                </tr>
+                            {% endif %}
                         {% endfor %}
                     {% endautoescape %}
                 </tbody>
@@ -213,6 +225,7 @@
                     <th>Role</th>
                     <th>Writer</th>
                     <th>Username</th>
+                    <th>Email</th>                    
                     <th>Tossups Written</th>
                     <th>Bonuses Written</th>
                     <th>% of Set Written</th>
@@ -231,6 +244,7 @@
                     {% endif %}
                     <td><a href="/contributor/{{ qset.id }}/{{ writer.writer.id}}">{{ writer.writer.user.first_name }} {{ writer.writer.user.last_name }}</a></td>
                     <td><a href="/contributor/{{ qset.id }}/{{ writer.writer.id}}">{{ writer.writer.user.username }}</a></td>
+                    <td>{{ writer.writer.user.email }} </td>
                     <td>{{ writer.tu_written }}</td>
                     <td>{{ writer.bonus_written }}</td>
                     <td>{{ writer.question_percent|floatformat }}%</td>
@@ -293,7 +307,7 @@
                             <td><a href="/edit_tossup/{{ tossup.id }}">{{ tossup.tossup_text|safe|preview|question_html }}</a></td>
                             <td><a href="/edit_tossup/{{ tossup.id }}">{{ tossup|tossup_answer }}</a></td>
                             <td>Tossup</td>
-                            <td>{{ tossup.category }}</td>
+                            <td><a href="/categories/{{ qset.id }}/{{ tossup.category.id }}">{{ tossup.category }}</a></td>
                             <td>{% if tossup.packet %} {{ tossup.packet }} {% else %} Not in packet {% endif %}</td>
                             <td>{{ tossup.created_date|to_short_datetime }}</td>
                             <td>{{ tossup.last_changed_date|to_short_datetime }}</td>
@@ -348,7 +362,7 @@
                             </td>
                             <td><a href="/edit_bonus/{{ bonus.id }}">{{ bonus|bonus_answers }}</a></td>
                             <td>{{ bonus.question_type }}</td>
-                            <td>{{ bonus.category }}</td>
+                            <td><a href="/categories/{{ qset.id }}/{{ bonus.category.id }}">{{ bonus.category }}</a></td>
                             <td>{% if bonus.packet %} {{ bonus.packet }} {% else %} Not in packet {% endif %}</td>
                             <td>{{ bonus.created_date|to_short_datetime }}</td>
                             <td>{{ bonus.last_changed_date|to_short_datetime }}</td>
@@ -410,7 +424,6 @@
             </tbody>
         </table>
     </div>
-</div>
 </div>
 
 <input type="hidden" id="qset-id" value="{{ qset.id }}">
